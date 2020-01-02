@@ -32,12 +32,17 @@ package edu.cmu.pocketsphinx.demo;
 
 import android.Manifest;
 import android.app.Activity;
+import android.bluetooth.BluetoothAdapter;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.AsyncTask;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
+import android.util.Log;
+import android.view.KeyEvent;
+import android.view.View;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -55,8 +60,9 @@ import edu.cmu.pocketsphinx.SpeechRecognizerSetup;
 import static android.widget.Toast.makeText;
 
 public class PocketSphinxActivity extends Activity implements
-        RecognitionListener {
+        RecognitionListener{
 
+    private static final String TAG = "PocketSphinxActivity";
     /* Named searches allow to quickly reconfigure the decoder */
     private static final String KWS_SEARCH = "wakeup";
     private static final String FORECAST_SEARCH = "forecast";
@@ -73,6 +79,28 @@ public class PocketSphinxActivity extends Activity implements
     private SpeechRecognizer recognizer;
     private HashMap<String, Integer> captions;
 
+    private BluetoothReceiver bluetoothReceiver;
+    private int REQUEST_ENABLE_BT = 1;
+
+    private BluetoothReceiver.BluetoothListener mListener = new BluetoothReceiver.BluetoothListener() {
+        @Override
+        public void onBluetoothConnect() {
+            // Recognizer initialization is a time-consuming and it involves IO,
+            // so we execute it in async task
+            ((TextView) findViewById(R.id.bluetooth_text))
+                    .setText("Bluetooth HSP is connected.");
+            new SetupTask(PocketSphinxActivity.this).execute();
+        }
+
+        @Override
+        public void onBluetoothDisconnect() {
+            ((TextView) findViewById(R.id.bluetooth_text))
+                    .setText("Bluetooth HSP is disConnected.");
+            ((TextView) findViewById(R.id.caption_text))
+                    .setText("Preparing the recognizer");
+        }
+    };
+
     @Override
     public void onCreate(Bundle state) {
         super.onCreate(state);
@@ -88,6 +116,9 @@ public class PocketSphinxActivity extends Activity implements
         ((TextView) findViewById(R.id.caption_text))
                 .setText("Preparing the recognizer");
 
+        ((TextView) findViewById(R.id.bluetooth_text))
+                .setText("Bluetooth state unknown");
+
         // Check if user has given permission to record audio
         int permissionCheck = ContextCompat.checkSelfPermission(getApplicationContext(), Manifest.permission.RECORD_AUDIO);
         if (permissionCheck != PackageManager.PERMISSION_GRANTED) {
@@ -96,8 +127,11 @@ public class PocketSphinxActivity extends Activity implements
         }
         // Recognizer initialization is a time-consuming and it involves IO,
         // so we execute it in async task
-        new SetupTask(this).execute();
+//         new SetupTask(this).execute();
+
+        bluetoothReceiver = new BluetoothReceiver(this, mListener);
     }
+
 
     private static class SetupTask extends AsyncTask<Void, Void, Exception> {
         WeakReference<PocketSphinxActivity> activityReference;
@@ -135,7 +169,8 @@ public class PocketSphinxActivity extends Activity implements
             if (grantResults.length > 0 && grantResults[0] == PackageManager.PERMISSION_GRANTED) {
                 // Recognizer initialization is a time-consuming and it involves IO,
                 // so we execute it in async task
-                new SetupTask(this).execute();
+//                 new SetupTask(this).execute();
+                bluetoothReceiver = new BluetoothReceiver(this, mListener);
             } else {
                 finish();
             }
@@ -150,6 +185,23 @@ public class PocketSphinxActivity extends Activity implements
             recognizer.cancel();
             recognizer.shutdown();
         }
+
+        if (bluetoothReceiver == null){
+            Log.e(TAG, "Bluetooth Receiver is null before unregistering in onDestroy");
+            return;
+        }
+        bluetoothReceiver.closeReceiver();
+        bluetoothReceiver=null;
+
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode==REQUEST_ENABLE_BT && resultCode==Activity.RESULT_OK){
+            Intent intent = new Intent(this, Connector.class);
+            startService(intent);
+        }
     }
 
     /**
@@ -163,9 +215,11 @@ public class PocketSphinxActivity extends Activity implements
             return;
 
         String text = hypothesis.getHypstr();
-        if (text.equals(KEYPHRASE))
+        if (text.equals(KEYPHRASE)) {
+            Log.i(TAG, "Keyword detected : " + hypothesis.getHypstr());
             switchSearch(MENU_SEARCH);
-        else if (text.equals(DIGITS_SEARCH))
+//            switchSearch(KWS_SEARCH);
+        } else if (text.equals(DIGITS_SEARCH))
             switchSearch(DIGITS_SEARCH);
         else if (text.equals(PHONE_SEARCH))
             switchSearch(PHONE_SEARCH);
@@ -218,11 +272,12 @@ public class PocketSphinxActivity extends Activity implements
         // of different kind and switch between them
 
         recognizer = SpeechRecognizerSetup.defaultSetup()
-                .setAcousticModel(new File(assetsDir, "en-us-ptm"))
-                .setDictionary(new File(assetsDir, "cmudict-en-us.dict"))
-
+//                .setAcousticModel(new File(assetsDir, "en-us-ptm"))
+//                .setDictionary(new File(assetsDir, "cmudict-en-us.dict"))
+                .setAcousticModel(new File(assetsDir, "en_in.cd_cont_5000"))
+                .setDictionary(new File(assetsDir, "en_in.dic"))
                 .setRawLogDir(assetsDir) // To disable logging of raw audio comment out this call (takes a lot of space on the device)
-
+//                .setKeywordThreshold((float) 1.e-30)
                 .getRecognizer();
         recognizer.addListener(this);
 
@@ -258,5 +313,31 @@ public class PocketSphinxActivity extends Activity implements
     @Override
     public void onTimeout() {
         switchSearch(KWS_SEARCH);
+    }
+
+    public void connectHSP(View v){
+        if (!BluetoothAdapter.getDefaultAdapter().isEnabled()) {
+            Intent enableBtIntent = new Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE);
+            startActivityForResult(enableBtIntent, REQUEST_ENABLE_BT);
+            return;
+        }
+        Intent intent = new Intent(this, Connector.class);
+        startService(intent);
+    }
+
+    @Override
+    public boolean onKeyDown(int keyCode, KeyEvent event) {
+//        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+//            return super.onKeyDown(keyCode, event);
+//        }
+        switch (keyCode) {
+            case KeyEvent.KEYCODE_MEDIA_PLAY:
+                return true;
+            case KeyEvent.KEYCODE_VOLUME_UP:
+                return true;
+            case KeyEvent.KEYCODE_VOLUME_DOWN:
+                return true;
+        }
+        return super.onKeyDown(keyCode, event);
     }
 }
